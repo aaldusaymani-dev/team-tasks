@@ -277,6 +277,8 @@ function gateView(){
   if(S.phase==='signedout') return [h('section',{class:'login'},
     h('h1',null,APP_TITLE),
     h('p',{class:'muted'},'سجّل دخولك بحساب Google حق الشركة عشان تشوف مهامك.'),
+    S.authErr?h('div',{class:'notice',style:'border-color:var(--late);color:var(--ink)'},
+      h('b',null,'ما تم تسجيل الدخول. '),'الرسالة من النظام: ',h('bdi',{dir:'ltr',class:'mail'},S.authErr)):null,
     h('div',{class:'actions'},h('button',{class:'btn primary',type:'button',onclick:signIn},'الدخول بحساب Google'),demoBtn),
     h('p',{class:'date'},todayLine()))];
   if(S.phase==='notmember') return [h('section',{class:'login'},
@@ -732,6 +734,11 @@ async function start(session){
 }
 async function boot(){
   if(new URLSearchParams(location.search).has('demo')){startDemo();}
+  // Supabase sends sign-in failures back as ?error_description=… (or in the #hash)
+  const qp=new URLSearchParams(location.search), hp=new URLSearchParams(location.hash.replace(/^#/,''));
+  const authErr=qp.get('error_description')||hp.get('error_description')||qp.get('error')||hp.get('error');
+  const hadCode=qp.has('code');
+  if(authErr){S.authErr=authErr.replace(/\+/g,' ');history.replaceState(null,'',location.pathname);}
   const configured=CFG.supabaseUrl&&SB_KEY&&!/YOUR-/.test(CFG.supabaseUrl+SB_KEY);
   if(!configured||!window.supabase){S.phase='setup';render();return;}
   S.sb=window.supabase.createClient(CFG.supabaseUrl,SB_KEY,{auth:{persistSession:true,detectSessionInUrl:true,flowType:'pkce'}});
@@ -739,7 +746,11 @@ async function boot(){
     if(ev==='SIGNED_OUT'){S.phase='signedout';S.me=null;S.members=[];S.tasks={};if(S.channel){S.sb.removeChannel(S.channel);S.channel=null;}closeModal();render();}
     else if(session&&(ev==='SIGNED_IN'||ev==='INITIAL_SESSION')) setTimeout(()=>start(session),0);
   });
+  // surfaces a failed code exchange (?code=…) that would otherwise just land back on the login screen
+  try{const init=await S.sb.auth.initialize(); if(init&&init.error&&!S.authErr) S.authErr=init.error.message||String(init.error);}catch(e){if(!S.authErr) S.authErr=e.message||String(e);}
   const {data}=await S.sb.auth.getSession();
+  if(hadCode&&!(data&&data.session)&&!S.authErr) S.authErr='Sign-in code returned but no session was created (PKCE code verifier not found in this browser).';
+  if(hadCode) history.replaceState(null,'',location.pathname);
   if(data&&data.session) start(data.session); else if(S.phase==='boot'){S.phase='signedout';render();}
 }
 render();

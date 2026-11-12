@@ -5,8 +5,8 @@ window.TEAM_TASKS_CONFIG = {
   // Supabase Dashboard → Settings → API Keys
   // Use the "publishable" key (sb_publishable_...) — or the legacy "anon" key.
   // Never put the secret / service_role key here.
-  supabaseUrl: 'https://YOUR-PROJECT.supabase.co',
-  supabaseKey: 'YOUR-PUBLISHABLE-KEY',
+  supabaseUrl: 'https://wbwwzbqsoqhqkrgipjiw.supabase.co',
+  supabaseKey: 'sb_publishable_VW70EXKaBchzOowFlPVk9A_Yc8iTMO',
 
   // Shown in the header and browser tab
   appTitle: 'مهام فريق الإسناد',

@@ -6,7 +6,7 @@ window.TEAM_TASKS_CONFIG = {
   // Use the "publishable" key (sb_publishable_...) — or the legacy "anon" key.
   // Never put the secret / service_role key here.
   supabaseUrl: 'https://wbwwzbqsoqhqkrgipjiw.supabase.co',
-  supabaseKey: 'sb_publishable_VW70EXKaBchzOowFlPVk9A_Yc8iTMO',
+  supabaseKey: 'sb_publishable_VW70EXKaBchzOowFlPVk9A_Yc8iTMOK',
 
   // Shown in the header and browser tab
   appTitle: 'مهام فريق الإسناد',

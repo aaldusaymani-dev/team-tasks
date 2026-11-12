@@ -13,5 +13,5 @@ window.TEAM_TASKS_CONFIG = {
 
   // Optional: your company's Google Workspace domain (e.g. 'example.com').
   // Google then offers company accounts first on the sign-in screen.
-  googleHostedDomain: ''
+  googleHostedDomain: 'one1.sa'
 };

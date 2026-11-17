@@ -28,7 +28,7 @@ const dfLong=new Intl.DateTimeFormat('ar-SA',{calendar:'gregory',weekday:'long',
 const dfHijri=new Intl.DateTimeFormat('ar-SA',{calendar:'islamic-umalqura',day:'numeric',month:'long',year:'numeric'});
 
 const S={phase:'boot',sb:null,me:null,role:null,authEmail:'',err:null,
-  members:[],tasks:{},channel:null,reloadTimer:null,starting:false,
+  members:[],tasks:{},handovers:[],directory:[],channel:null,reloadTimer:null,starting:false,
   filter:'all',showAllDone:{},modal:null,thread:{tid:null,comments:[],log:[],loading:false},
   demo:null,demoAs:'manager'};
 
@@ -76,6 +76,14 @@ function errMsg(e){
   if(code==='23505') return 'هذا الإيميل مضاف من قبل.';
   if(code==='23503') return 'ما ينحذف لأن عليه مهام. احذف مهامه أو انقلها لموظف ثاني أول.';
   if(code==='23514') return 'فيه حقل أطول من المسموح أو قيمة غير صحيحة.';
+  if(/handover: already open/.test(m)) return 'عندك ملف تسليم مفتوح. ألغه أو انتظر قرار المدير.';
+  if(/handover: invalid receiver/.test(m)) return 'اختر المستلم من الموظفين.';
+  if(/handover: invalid dates/.test(m)) return 'تأكد من التواريخ: تاريخ النهاية لازم يكون بعد البداية.';
+  if(/handover: no tasks/.test(m)) return 'اختر مهمة وحدة على الأقل.';
+  if(/handover: progress required/.test(m)) return 'اكتب "وين وصلت" لكل مهمة مختارة.';
+  if(/handover: task not available/.test(m)) return 'فيه مهمة ما عادت عندك أو انتهت. حدّث الصفحة وحاول مرة ثانية.';
+  if(/handover: not pending|handover: not approved|handover: not active/.test(m)) return 'حالة الملف تغيّرت. حدّث الصفحة.';
+  if(/handover: not yours|employees only/.test(m)) return 'ما عندك صلاحية على هذا الملف.';
   if(/fetch|network|Failed to/i.test(m)) return 'تعذّر الاتصال. تأكد من الإنترنت وحاول مرة ثانية.';
   if(/JWT|session/i.test(m)) return 'انتهت الجلسة. سجّل دخول مرة ثانية.';
   return 'تعذّر الحفظ. حاول مرة ثانية.';
@@ -89,7 +97,13 @@ function fromRow(r){
     escalated:!!r.escalated,escalatedAt:ms(r.escalated_at),resolvedRole:r.resolved_role,resolvedAt:ms(r.resolved_at),
     resolution:r.resolution||'',resolutionAck:r.resolution_ack!==false,doneAt:ms(r.done_at),
     commentCount:r.comment_count||0,lastCommentRole:r.last_comment_role||null,
+    originMemberId:r.origin_member_id||null,handoverId:r.handover_id||null,
     createdRole:r.created_role,createdAt:ms(r.created_at),updatedAt:ms(r.updated_at)};
+}
+function fromHandover(r){
+  return {id:r.id,from:r.from_member,to:r.to_member,startsOn:r.starts_on,endsOn:r.ends_on,reason:r.reason||'إجازة',note:r.note||'',
+    status:r.status,managerNote:r.manager_note||'',decidedAt:ms(r.decided_at),acceptedAt:ms(r.accepted_at),returnedAt:ms(r.returned_at),createdAt:ms(r.created_at),
+    items:(r.handover_items||[]).map(i=>({taskId:i.task_id,title:i.task_title,progress:i.progress,nextStep:i.next_step||'',contact:i.contact||''}))};
 }
 function toRow(o){
   return {title:o.title,details:o.details||'',source:o.source||'manager',assigned_on:o.assignedOn||todayStr(),
@@ -104,13 +118,15 @@ function V(){
   if(S.demo){
     const emps=S.demo.members.filter(m=>m.role==='employee');
     const names=Object.fromEntries(S.demo.members.map(m=>[m.id,m.name]));
-    if(S.demoAs==='manager') return {staff:emps.map(m=>m.id),tasks:S.demo.tasks,names,role:'manager',me:'mgr',myName:names.mgr};
-    return {staff:[S.demoAs],tasks:{[S.demoAs]:S.demo.tasks[S.demoAs]||{}},names,role:'employee',me:S.demoAs,myName:names[S.demoAs]};
+    const hs=S.demo.handovers;
+    if(S.demoAs==='manager') return {staff:emps.map(m=>m.id),tasks:S.demo.tasks,names,role:'manager',me:'mgr',myName:names.mgr,handovers:hs,team:S.demo.members};
+    return {staff:[S.demoAs],tasks:{[S.demoAs]:S.demo.tasks[S.demoAs]||{}},names,role:'employee',me:S.demoAs,myName:names[S.demoAs],
+      handovers:hs.filter(h=>h.from===S.demoAs||h.to===S.demoAs),team:S.demo.members};
   }
-  const names=Object.fromEntries(S.members.map(m=>[m.id,m.name]));
-  if(S.role==='employee') return {staff:[S.me.id],tasks:{[S.me.id]:S.tasks[S.me.id]||{}},names,role:'employee',me:S.me.id,myName:S.me.name};
+  const names=Object.fromEntries(S.directory.concat(S.members).map(m=>[m.id,m.name]));
+  if(S.role==='employee') return {staff:[S.me.id],tasks:{[S.me.id]:S.tasks[S.me.id]||{}},names,role:'employee',me:S.me.id,myName:S.me.name,handovers:S.handovers,team:S.directory};
   const emps=S.members.filter(m=>m.role==='employee'&&m.active);
-  return {staff:emps.map(m=>m.id),tasks:S.tasks,names,role:'manager',me:S.me.id,myName:S.me.name};
+  return {staff:emps.map(m=>m.id),tasks:S.tasks,names,role:'manager',me:S.me.id,myName:S.me.name,handovers:S.handovers,team:S.members};
 }
 function memberById(id){return (S.demo?S.demo.members:S.members).find(m=>m.id===id);}
 function nameOf(v,uid){return v.names[uid]||'موظف';}
@@ -122,6 +138,24 @@ function allTasks(v,only){
 }
 function avatar(v,uid,small){
   return h('span',{class:'av'+(small?' sm':''),'aria-hidden':'true'},nameOf(v,uid).trim().charAt(0));
+}
+
+/* ---------- handover helpers ---------- */
+const HS={pending:'بانتظار اعتماد المدير',approved:'معتمد · بانتظار تأكيد الاستلام',accepted:'تم الاستلام',returned:'رجعت المهام لصاحبها',rejected:'رفضه المدير',cancelled:'ألغاه الموظف'};
+function hoActive(x){return x.status==='approved'||x.status==='accepted';}
+function hoOpen(x){return x.status==='pending'||hoActive(x);}
+function hoRange(x){return 'من '+fmtDay(x.startsOn)+' إلى '+fmtDay(x.endsOn);}
+function hoDays(x){return Math.round((parseDay(x.endsOn)-parseDay(x.startsOn))/DAY)+1;}
+function countWord(n,one,two,many){return n===1?one:n===2?two:N(n)+' '+many;}
+function findTaskAnywhere(v,tid){for(const uid in v.tasks){if(v.tasks[uid]&&v.tasks[uid][tid]) return {uid,tid,t:v.tasks[uid][tid]};}return null;}
+function confirmBtn(label,confirmLabel,onConfirm,cls){
+  let armed=false;
+  const b=h('button',{class:'btn small '+(cls||''),type:'button',onclick:e=>{
+    e.stopPropagation();
+    if(!armed){armed=true;b.classList.add('armed');b.textContent=confirmLabel;setTimeout(()=>{if(b.isConnected){armed=false;b.classList.remove('armed');b.textContent=label;}},4000);return;}
+    b.disabled=true; onConfirm(b);
+  }},label);
+  return b;
 }
 
 /* ---------- data access ---------- */
@@ -171,6 +205,50 @@ const api={
     if(error) throw error;
     await loadThread(tid); scheduleReload();
   },
+  async submitHandover(f){
+    if(S.demo){
+      const v=V(),now=Date.now();
+      S.demo.handovers.unshift({id:'h'+Math.random().toString(36).slice(2,8),from:v.me,to:f.to,startsOn:f.startsOn,endsOn:f.endsOn,reason:f.reason,note:f.note,
+        status:'pending',managerNote:'',decidedAt:null,acceptedAt:null,returnedAt:null,createdAt:now,
+        items:f.items.map(i=>({taskId:i.taskId,title:(getTask(v.me,i.taskId)||{}).title||'',progress:i.progress,nextStep:i.nextStep,contact:i.contact}))});
+      afterLocalChange(); return;
+    }
+    const {error}=await S.sb.rpc('submit_handover',{p_to:f.to,p_starts:f.startsOn,p_ends:f.endsOn,p_reason:f.reason,p_note:f.note,
+      p_items:f.items.map(i=>({task_id:i.taskId,progress:i.progress,next_step:i.nextStep,contact:i.contact}))});
+    if(error) throw error; await reload();
+  },
+  async decideHandover(id,approve,note){
+    if(S.demo){
+      const x=S.demo.handovers.find(z=>z.id===id); if(!x||x.status!=='pending') return;
+      if(approve){
+        const src=S.demo.tasks[x.from]||{}, dst=S.demo.tasks[x.to]||(S.demo.tasks[x.to]={});
+        for(const it of x.items){const t=src[it.taskId]; if(t&&t.status!=='done'){delete src[it.taskId];dst[it.taskId]=Object.assign({},t,{memberId:x.to,originMemberId:x.from,handoverId:x.id});}}
+      }
+      Object.assign(x,{status:approve?'approved':'rejected',managerNote:note||'',decidedAt:Date.now()});
+      afterLocalChange(); return;
+    }
+    const {error}=await S.sb.rpc('decide_handover',{p_id:id,p_approve:approve,p_note:note||''});
+    if(error) throw error; await reload();
+  },
+  async acceptHandover(id){
+    if(S.demo){const x=S.demo.handovers.find(z=>z.id===id); if(x&&x.status==='approved') Object.assign(x,{status:'accepted',acceptedAt:Date.now()}); afterLocalChange(); return;}
+    const {error}=await S.sb.rpc('accept_handover',{p_id:id}); if(error) throw error; await reload();
+  },
+  async returnHandover(id){
+    if(S.demo){
+      const x=S.demo.handovers.find(z=>z.id===id); if(!x||!hoActive(x)) return;
+      for(const uid in S.demo.tasks) for(const tid in S.demo.tasks[uid]){
+        const t=S.demo.tasks[uid][tid];
+        if(t.handoverId===id&&t.status!=='done'&&t.originMemberId){delete S.demo.tasks[uid][tid];(S.demo.tasks[t.originMemberId]||(S.demo.tasks[t.originMemberId]={}))[tid]=Object.assign({},t,{memberId:t.originMemberId,originMemberId:null,handoverId:null});}
+      }
+      Object.assign(x,{status:'returned',returnedAt:Date.now()}); afterLocalChange(); return;
+    }
+    const {error}=await S.sb.rpc('return_handover',{p_id:id}); if(error) throw error; await reload();
+  },
+  async cancelHandover(id){
+    if(S.demo){const x=S.demo.handovers.find(z=>z.id===id); if(x&&x.status==='pending') x.status='cancelled'; afterLocalChange(); return;}
+    const {error}=await S.sb.rpc('cancel_handover',{p_id:id}); if(error) throw error; await reload();
+  },
   async saveRoster(rows,removed){
     if(S.demo){toast('هذا مثال، الأسماء ما تنحفظ.');return;}
     for(const id of removed){
@@ -185,7 +263,7 @@ const api={
     await reload();
   }
 };
-function afterLocalChange(tid){render(); if(S.modal&&S.modal.mode==='edit'&&(!tid||tid===S.modal.tid)) refreshModalLive();}
+function afterLocalChange(tid){render(); if(S.modal&&S.modal.mode==='edit'&&(!tid||tid===S.modal.tid)) refreshModalLive(); if(S.modal&&S.modal.mode==='handover') renderModal();}
 
 async function loadThread(tid){
   if(S.demo){const th=S.demo.threads[tid]||{comments:[],log:[]};S.thread={tid,comments:th.comments,log:th.log,loading:false};refreshModalLive();return;}
@@ -201,16 +279,24 @@ async function loadThread(tid){
 
 async function reload(){
   const since=new Date(Date.now()-120*DAY).toISOString();
-  const [m,t]=await Promise.all([
+  const hoSince=new Date(Date.now()-60*DAY).toISOString();
+  const [m,t,ho,dir]=await Promise.all([
     S.sb.from('members').select('*').order('sort_order').order('created_at'),
-    S.sb.from('tasks').select('*').or('status.neq.done,done_at.gte."'+since+'"').order('created_at').limit(3000)]);
+    S.sb.from('tasks').select('*').or('status.neq.done,done_at.gte."'+since+'"').order('created_at').limit(3000),
+    S.sb.from('handovers').select('*, handover_items(*)').or('status.in.(pending,approved,accepted),updated_at.gte."'+hoSince+'"').order('created_at',{ascending:false}).limit(200),
+    S.sb.rpc('team_directory')]);
   if(m.error) throw m.error; if(t.error) throw t.error;
   S.members=m.data||[];
+  // handover features need the updated schema.sql; keep working without it
+  S.handovers=ho.error?[]:(ho.data||[]).map(fromHandover);
+  S.directory=dir.error?[]:(dir.data||[]);
+  S.hoReady=!ho.error;
   const me=S.members.find(x=>x.id===S.me.id); if(me){S.me=me;S.role=me.role;}
   const map={}; for(const r of (t.data||[])){(map[r.member_id]||(map[r.member_id]={}))[r.id]=fromRow(r);}
   S.tasks=map;
   render();
   if(S.modal&&S.modal.mode==='edit') refreshModalLive();
+  if(S.modal&&S.modal.mode==='handover') renderModal();
 }
 function scheduleReload(){clearTimeout(S.reloadTimer);S.reloadTimer=setTimeout(()=>{reload().catch(e=>console.warn(e));},350);}
 function subscribe(){
@@ -219,6 +305,7 @@ function subscribe(){
   S.channel=S.sb.channel('team-tasks')
     .on('postgres_changes',{event:'*',schema:'public',table:'tasks'},scheduleReload)
     .on('postgres_changes',{event:'*',schema:'public',table:'members'},scheduleReload)
+    .on('postgres_changes',{event:'*',schema:'public',table:'handovers'},scheduleReload)
     .on('postgres_changes',{event:'INSERT',schema:'public',table:'comments'},onThread)
     .on('postgres_changes',{event:'INSERT',schema:'public',table:'task_log'},onThread)
     .subscribe();
@@ -261,10 +348,19 @@ function render(){
   else body=gateView();
   $app.replaceChildren(h('div',{class:'wrap'},body));
 }
+// Brand logo: assets/brand/logo.png (light) and logo-white.png (dark). Missing files hide the slot.
+function logoEl(){
+  const wrap=h('span',{class:'logo'});
+  const miss=()=>wrap.classList.add('missing');
+  wrap.append(h('img',{class:'logo-l',src:'assets/brand/logo.png',alt:'',onerror:miss}),
+              h('img',{class:'logo-d',src:'assets/brand/logo-white.png',alt:'',onerror:miss}));
+  return wrap;
+}
 function header(title,sub,action){
   const acct=(!S.demo&&S.phase==='ready')?h('p',{class:'acct-bar'},(S.me&&S.me.name)+' · ',h('button',{class:'linkish',type:'button',onclick:signOut},'تسجيل الخروج')):null;
   return h('header',{class:'top'},
-    h('div',{class:'titles'},h('h1',null,title),h('p',{class:'date'},[sub,todayLine()].filter(Boolean).join(' · ')),acct),
+    h('div',{class:'brand'},logoEl(),
+      h('div',{class:'titles'},h('h1',null,title),h('p',{class:'date'},[sub,todayLine()].filter(Boolean).join(' · ')),acct)),
     action||null);
 }
 function gateView(){
@@ -275,6 +371,7 @@ function gateView(){
     h('p',null,'عبّ رابط مشروع Supabase والمفتاح العام (publishable) في ملف config.js. الخطوات كاملة في ملف README.'),
     h('div',{class:'actions'},demoBtn))];
   if(S.phase==='signedout') return [h('section',{class:'login'},
+    logoEl(),
     h('h1',null,APP_TITLE),
     h('p',{class:'muted'},'سجّل دخولك بحساب Google حق الشركة عشان تشوف مهامك.'),
     S.authErr?h('div',{class:'notice',style:'border-color:var(--late);color:var(--ink)'},
@@ -282,6 +379,7 @@ function gateView(){
     h('div',{class:'actions'},h('button',{class:'btn primary',type:'button',onclick:signIn},'الدخول بحساب Google'),demoBtn),
     h('p',{class:'date'},todayLine()))];
   if(S.phase==='notmember') return [h('section',{class:'login'},
+    logoEl(),
     h('h1',null,APP_TITLE),
     h('p',null,'حسابك ',h('bdi',{class:'mail'},S.authEmail),' مو مضاف للفريق.'),
     h('p',{class:'muted'},'اطلب من مديرك يضيف إيميلك من "أسماء الفريق"، وبعدها حدّث الصفحة.'),
@@ -332,10 +430,14 @@ function attentionSection(v){
   const all=allTasks(v);
   const ch=all.filter(x=>isEscalated(x.t)).sort((a,b)=>(a.t.escalatedAt||0)-(b.t.escalatedAt||0));
   const late=all.filter(x=>isLate(x.t)&&!isEscalated(x.t)).sort((a,b)=>a.t.due.localeCompare(b.t.due));
-  const total=ch.length+late.length;
+  const hp=v.handovers.filter(x=>x.status==='pending').sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
+  const hEnd=v.handovers.filter(x=>hoActive(x)&&daysUntil(x.endsOn)<0);
+  const total=ch.length+late.length+hp.length+hEnd.length;
   const sec=h('section',{class:'attention'+(total?'':' calm'),'aria-labelledby':'att-h'},
-    h('div',{class:'sec-head'},h('h2',{id:'att-h'},'يحتاج تدخلك'),total?h('span',{class:'muted num'},N(total)+' '+(total===1?'مهمة':total===2?'مهمتين':'مهام')):null));
-  if(!total){sec.append(h('p',null,'ما فيه تحديات مرسلة لك ولا مهام متأخرة.'));return sec;}
+    h('div',{class:'sec-head'},h('h2',{id:'att-h'},'يحتاج تدخلك'),total?h('span',{class:'muted num'},countWord(total,'بند واحد','بندين','بنود')):null));
+  if(!total){sec.append(h('p',null,'ما فيه شي يحتاج تدخلك الحين.'));return sec;}
+  if(hp.length) sec.append(h('div',{class:'att-group'},h('div',{class:'att-label'},'ملفات تسليم بانتظار اعتمادك'),hp.map(x=>hoAttItem(v,x,'pending'))));
+  if(hEnd.length) sec.append(h('div',{class:'att-group'},h('div',{class:'att-label'},'تسليمات انتهت مدتها'),hEnd.map(x=>hoAttItem(v,x,'ended'))));
   if(ch.length) sec.append(h('div',{class:'att-group'},h('div',{class:'att-label'},'تحديات أرسلها لك الموظفون'),ch.map(x=>attItem(v,x,'ch'))));
   if(late.length) sec.append(h('div',{class:'att-group'},h('div',{class:'att-label'},'مهام متأخرة'),late.map(x=>attItem(v,x,'late'))));
   return sec;
@@ -348,6 +450,15 @@ function attItem(v,x,kind){
       h('span',{class:'att-sub'},kind==='ch'?x.t.challenge:SL[x.t.status]+' · التسليم '+fmtDay(x.t.due))),
     h('span',{class:'att-age'+(kind==='late'?' late':'')},kind==='ch'?sinceLabel(x.t.escalatedAt||x.t.challengeAt):dueLabel(x.t).text));
 }
+function hoAttItem(v,x,kind){
+  return h('button',{class:'att-item',type:'button',onclick:()=>openHandover(x.id)},
+    avatar(v,x.from),
+    h('span',{class:'att-body'},
+      h('span',null,h('span',{class:'att-who'},nameOf(v,x.from)+' ← '+nameOf(v,x.to)+' · '),
+        h('span',{class:'att-title'},kind==='pending'?'تسليم '+countWord(x.items.length,'مهمة','مهمتين','مهام')+' · '+x.reason:'رجع '+nameOf(v,x.from)+'؟ رجّع له مهامه')),
+      h('span',{class:'att-sub'},hoRange(x))),
+    h('span',{class:'att-age'},kind==='pending'?sinceLabel(x.createdAt):'انتهت '+fmtDay(x.endsOn)));
+}
 function teamSection(v){
   const weekAgo=Date.now()-7*DAY;
   const rows=v.staff.map(uid=>{
@@ -358,8 +469,16 @@ function teamSection(v){
     const cell=(n,cls)=>h('td',{class:'n'+(n?(cls?' '+cls:''):' zero')},N(n));
     const m=memberById(uid);
     const seen=S.demo?null:(m&&m.last_seen_at?'آخر دخول '+dfShort.format(new Date(m.last_seen_at)):'لم يدخل بعد');
-    return h('tr',{onclick:()=>{S.filter=uid;render();const b=document.getElementById('board');if(b)b.scrollIntoView({behavior:'smooth',block:'start'});}},
-      h('td',null,h('span',{class:'who'},avatar(v,uid),h('span',{class:'who-name'},nameOf(v,uid),seen?h('span',{class:'acct'},seen):null))),
+    const away=v.handovers.find(x=>x.from===uid&&hoActive(x));
+    const pend=v.handovers.find(x=>x.from===uid&&x.status==='pending');
+    const recv=v.handovers.filter(x=>x.to===uid&&hoActive(x));
+    let hoLine=null;
+    if(away) hoLine=(daysUntil(away.startsOn)>0?'إجازة من '+fmtDay(away.startsOn):'إجازة حتى '+fmtDay(away.endsOn))+' ← مهامه عند '+nameOf(v,away.to);
+    else if(pend) hoLine='ملف تسليم بانتظار اعتمادك';
+    else if(recv.length) hoLine='مستلم مهام '+recv.map(x=>nameOf(v,x.from)).join('، ')+(recv.some(x=>x.status==='approved')?' · بانتظار تأكيده':'');
+    return h('tr',{class:away?'away':null,onclick:()=>{S.filter=uid;render();const b=document.getElementById('board');if(b)b.scrollIntoView({behavior:'smooth',block:'start'});}},
+      h('td',null,h('span',{class:'who'},avatar(v,uid),h('span',{class:'who-name'},nameOf(v,uid),
+        hoLine?h('span',{class:'acct hand'},hoLine):(seen?h('span',{class:'acct'},seen):null)))),
       cell(c.w),cell(c.d),cell(c.late,'bad'),cell(c.ch,'warn'),cell(c.wk));
   });
   return h('section',{'aria-labelledby':'team-h'},
@@ -412,6 +531,7 @@ function card(v,x,showEmp){
   const cc=t.commentCount||0;
   const top=h('div',{class:'card-top'},
     showEmp?h('span',{class:'chip-emp'},avatar(v,x.uid,true),nameOf(v,x.uid)):null,
+    t.handoverId&&t.originMemberId?h('span',{class:'pill handed'},'مستلمة من '+nameOf(v,t.originMemberId)):null,
     t.priority==='urgent'&&t.status!=='done'?h('span',{class:'pill urgent'},'عاجل'):null);
   const el=h('article',{class:'card'+(flagged?' flagged':'')+(t.status==='done'?' is-done':''),tabindex:'0',role:'button','aria-label':t.title,
       onclick:()=>openEdit(x.uid,x.tid),onkeydown:e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();openEdit(x.uid,x.tid);}}},
@@ -435,8 +555,11 @@ function card(v,x,showEmp){
 
 /* ----- employee ----- */
 function employeeView(v){
-  const out=[header('مهامي',v.myName||null,h('button',{class:'btn primary',type:'button',onclick:()=>openNew()},'+ مهمة جديدة'))];
+  const myOpen=v.handovers.find(x=>x.from===v.me&&hoOpen(x));
+  const hoBtn=(S.demo||S.hoReady)?h('button',{class:'btn',type:'button',onclick:()=>myOpen?openHandover(myOpen.id):openHandoverNew()},myOpen?'ملف التسليم':'تجهيز تسليم'):null;
+  const out=[header('مهامي',v.myName||null,h('div',{class:'btn-row'},hoBtn,h('button',{class:'btn primary',type:'button',onclick:()=>openNew()},'+ مهمة جديدة')))];
   if(S.demo) out.push(demoBanner());
+  const hpanel=handoverPanels(v); if(hpanel) out.push(hpanel);
   const solved=allTasks(v,v.me).filter(x=>resolvedUnseen(x.t)).sort((a,b)=>(b.t.resolvedAt||0)-(a.t.resolvedAt||0));
   if(solved.length) out.push(h('section',{class:'okpanel','aria-labelledby':'ok-h'},
     h('h2',{id:'ok-h'},'تم حل التحدي'),
@@ -457,10 +580,36 @@ function employeeView(v){
   return out;
 }
 
+function handoverPanels(v){
+  const rows=[];
+  const mine=v.handovers.filter(x=>x.from===v.me).sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
+  const open=mine.find(hoOpen);
+  const rejected=!open&&mine.find(x=>x.status==='rejected'&&Date.now()-(x.decidedAt||0)<7*DAY);
+  const view=x=>h('button',{class:'btn small',type:'button',onclick:()=>openHandover(x.id)},'عرض الملف');
+  const row=(cls,title,sub,acts)=>h('div',{class:'hp-item '+(cls||'')},h('div',{class:'hp-text'},h('b',null,title),sub?h('span',{class:'sub'},sub):null),h('div',{class:'hp-actions'},acts));
+  for(const x of v.handovers.filter(z=>z.to===v.me&&z.status==='approved'))
+    rows.push(row('incoming',nameOf(v,x.from)+' سلّمك '+countWord(x.items.length,'مهمة','مهمتين','مهام'),hoRange(x)+(x.managerNote?' · توجيه المدير: '+x.managerNote:''),
+      [h('button',{class:'btn small',type:'button',onclick:()=>openHandover(x.id)},'اقرأ ملف التسليم'),
+       h('button',{class:'btn small primary',type:'button',onclick:e=>{e.currentTarget.disabled=true;run(api.acceptHandover(x.id),'تم تأكيد الاستلام').catch(()=>{});}},'استلمت')]));
+  for(const x of v.handovers.filter(z=>z.to===v.me&&z.status==='accepted'))
+    rows.push(row('',`مهام مستلمة من ${nameOf(v,x.from)}`,'لين '+fmtDay(x.endsOn),[view(x)]));
+  if(open){
+    if(open.status==='pending') rows.push(row('','ملف تسليم مهامك إلى '+nameOf(v,open.to),hoRange(open)+' · بانتظار اعتماد المدير',
+      [view(open),confirmBtn('إلغاء الطلب','اضغط للتأكيد',()=>run(api.cancelHandover(open.id),'انلغى الطلب').catch(()=>{}),'danger')]));
+    else rows.push(row('','مهامك عند '+nameOf(v,open.to),hoRange(open)+' · '+(open.status==='accepted'?'أكّد الاستلام':'بانتظار تأكيده للاستلام'),
+      [view(open),confirmBtn('رجعت؟ استرجع مهامك','اضغط للتأكيد',()=>run(api.returnHandover(open.id),'رجعت مهامك لك').catch(()=>{}))]));
+  }
+  if(rejected) rows.push(row('rejected','رفض المدير ملف التسليم',rejected.managerNote||'تقدر تجهز ملف جديد.',[view(rejected)]));
+  if(!rows.length) return null;
+  return h('section',{class:'hpanel','aria-label':'التسليم والاستلام'},rows);
+}
+
 /* ---------- modals ---------- */
 function openNew(){S.modal={mode:'new'};renderModal();}
 function openEdit(uid,tid){S.modal={mode:'edit',uid,tid};if(S.thread.tid!==tid) S.thread={tid,comments:[],log:[],loading:true};renderModal();loadThread(tid).catch(()=>{});}
 function openRoster(){S.modal={mode:'roster'};renderModal();}
+function openHandover(id){S.modal={mode:'handover',id};renderModal();}
+function openHandoverNew(){S.modal={mode:'handover-new'};renderModal();}
 function closeModal(){S.modal=null;$modal.replaceChildren();}
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&S.modal) closeModal();});
 
@@ -519,6 +668,8 @@ function rosterModal(){
 function renderModal(){
   const m=S.modal; if(!m){$modal.replaceChildren();return;}
   if(m.mode==='roster') return rosterModal();
+  if(m.mode==='handover') return handoverModal(m.id);
+  if(m.mode==='handover-new') return handoverFormModal();
   const v=V(), isMgr=v.role==='manager';
   const t=m.mode==='edit'?getTask(m.uid,m.tid):null;
   if(m.mode==='edit'&&!t){closeModal();return;}
@@ -563,6 +714,7 @@ function renderModal(){
   }
 
   const form=h('form',{novalidate:true},
+    hoNoteBox(v,t),
     empField,
     h('label',{class:'field',for:'f-title'},'عنوان المهمة',h('input',{type:'text',id:'f-title',maxlength:'160',value:t?t.title:'',placeholder:'مثال: تجديد السجل التجاري للفرع'})),
     h('label',{class:'field',for:'f-details'},h('span',null,'التفاصيل ',h('span',{class:'hint'},'(اختياري)')),
@@ -596,6 +748,131 @@ function renderModal(){
     m.mode==='edit'?h('div',{id:'m-live',style:'display:flex;flex-direction:column;gap:14px'}):null);
   mountSheet(sheet,m.mode==='new'?(empField?'#f-emp':'#f-title'):null);
   if(m.mode==='edit') refreshModalLive();
+}
+function hoNoteBox(v,t){
+  if(!t||!t.handoverId) return null;
+  const x=v.handovers.find(z=>z.id===t.handoverId);
+  const it=x&&x.items.find(i=>i.taskId===t.id);
+  const from=t.originMemberId?nameOf(v,t.originMemberId):(x?nameOf(v,x.from):'');
+  return h('div',{class:'ho-note'},
+    h('b',null,'ملاحظة التسليم من '+from),
+    it?h('dl',{class:'kv sm'},
+      h('dt',null,'وين وصلت'),h('dd',null,it.progress),
+      it.nextStep?[h('dt',null,'الخطوة الجاية'),h('dd',null,it.nextStep)]:null,
+      it.contact?[h('dt',null,'رقم المعاملة / الجهة'),h('dd',null,it.contact)]:null):null,
+    x?h('button',{class:'linkish',type:'button',style:'align-self:flex-start',onclick:()=>openHandover(x.id)},'عرض ملف التسليم كامل'):null);
+}
+function handoverModal(id){
+  const v=V(), x=v.handovers.find(z=>z.id===id);
+  if(!x){closeModal();return;}
+  const isMgr=v.role==='manager', isFrom=x.from===v.me, isTo=x.to===v.me;
+  const keepNote=(document.getElementById('ho-mnote')||{}).value||'';
+  const errEl=h('p',{class:'err',hidden:true});
+  const fail=e=>{errEl.textContent=errMsg(e);errEl.hidden=false;};
+  const items=h('ol',{class:'ho-items'},x.items.map(it=>{
+    const found=it.taskId&&findTaskAnywhere(v,it.taskId);
+    return h('li',null,
+      h('div',{class:'t'},h('span',null,it.title),
+        found?h('button',{class:'linkish',type:'button',onclick:()=>openEdit(found.uid,found.tid)},SL[found.t.status]+' · فتح المهمة'):null),
+      h('dl',{class:'kv sm'},
+        h('dt',null,'وين وصلت'),h('dd',null,it.progress),
+        it.nextStep?[h('dt',null,'الخطوة الجاية'),h('dd',null,it.nextStep)]:null,
+        it.contact?[h('dt',null,'رقم المعاملة / الجهة'),h('dd',null,it.contact)]:null));
+  }));
+  const tl=[['أُرسل',x.createdAt],[x.status==='rejected'?'رُفض':'اعتُمد',x.decidedAt],['استُلم',x.acceptedAt],['رجعت المهام',x.returnedAt]]
+    .filter(z=>z[1]).map(z=>h('li',null,z[0]+' '+dfTime.format(new Date(z[1]))));
+  const acts=[];
+  if(isMgr&&x.status==='pending'){
+    const note=h('textarea',{id:'ho-mnote',rows:'2',maxlength:'2000',placeholder:'توجيه للمستلم، أو سبب الرفض (اختياري)'},keepNote);
+    const ok=h('button',{class:'btn primary',type:'button',onclick:()=>{ok.disabled=true;run(api.decideHandover(x.id,true,note.value.trim()),'اعتمدت التسليم، وانتقلت المهام لـ '+nameOf(v,x.to)).then(closeModal).catch(e=>{ok.disabled=false;fail(e);});}},'اعتماد التسليم');
+    acts.push(h('label',{class:'field',for:'ho-mnote'},'ملاحظتك',note),h('div',{class:'form-actions'},ok,
+      confirmBtn('رفض','اضغط للتأكيد',b=>run(api.decideHandover(x.id,false,note.value.trim()),'رفضت الملف').then(closeModal).catch(e=>{b.disabled=false;fail(e);}),'danger')));
+  }
+  if(isTo&&x.status==='approved') acts.push(h('div',{class:'form-actions'},
+    h('button',{class:'btn primary',type:'button',onclick:e=>{e.currentTarget.disabled=true;run(api.acceptHandover(x.id),'تم تأكيد الاستلام').then(closeModal).catch(fail);}},'استلمت المهام')));
+  if((isMgr||isFrom||isTo)&&hoActive(x)) acts.push(h('div',{class:'form-actions'},
+    confirmBtn('إرجاع المهام إلى '+nameOf(v,x.from),'اضغط للتأكيد',b=>run(api.returnHandover(x.id),'رجعت المهام إلى '+nameOf(v,x.from)).then(closeModal).catch(e=>{b.disabled=false;fail(e);}))));
+  if(isFrom&&x.status==='pending') acts.push(h('div',{class:'form-actions'},
+    confirmBtn('إلغاء الطلب','اضغط للتأكيد',b=>run(api.cancelHandover(x.id),'انلغى الطلب').then(closeModal).catch(e=>{b.disabled=false;fail(e);}),'danger')));
+  const sheet=h('div',{class:'sheet',role:'dialog','aria-modal':'true','aria-labelledby':'ho-h'},
+    h('div',{class:'sheet-head'},
+      h('div',null,h('h2',{id:'ho-h'},'ملف تسليم المهام'),h('p',{class:'src'},nameOf(v,x.from)+' ← '+nameOf(v,x.to))),
+      h('button',{class:'x',type:'button','aria-label':'إغلاق',onclick:closeModal},'×')),
+    h('div',null,h('span',{class:'hs '+x.status},HS[x.status]||x.status)),
+    h('dl',{class:'kv'},
+      h('dt',null,'المسلِّم'),h('dd',null,nameOf(v,x.from)),
+      h('dt',null,'المستلم'),h('dd',null,nameOf(v,x.to)),
+      h('dt',null,'الفترة'),h('dd',null,hoRange(x)+' · '+countWord(hoDays(x),'يوم واحد','يومين','أيام')),
+      h('dt',null,'السبب'),h('dd',null,x.reason)),
+    x.note?h('div',{class:'ho-block'},h('b',null,'ملاحظة عامة'),h('p',null,x.note)):null,
+    h('h3',{class:'sub-h'},'المهام ('+N(x.items.length)+')'),
+    items,
+    x.managerNote?h('div',{class:'ho-block mgr'},h('b',null,'ملاحظة المدير'),h('p',null,x.managerNote)):null,
+    tl.length?h('ul',{class:'timeline'},tl):null,
+    errEl,acts);
+  mountSheet(sheet,null);
+}
+function handoverFormModal(){
+  const v=V();
+  const mates=(v.team||[]).filter(m=>m.role==='employee'&&m.id!==v.me&&m.active!==false);
+  const mine=allTasks(v,v.me).filter(x=>x.t.status!=='done'&&!x.t.handoverId)
+    .sort((a,b)=>(a.t.status==='doing'?0:1)-(b.t.status==='doing'?0:1)||(a.t.due||'9999').localeCompare(b.t.due||'9999'));
+  const errEl=h('p',{class:'err',hidden:true});
+  const d5=new Date();d5.setDate(d5.getDate()+4);
+  const rows=mine.map(x=>{
+    const cb=h('input',{type:'checkbox',id:'ho-cb-'+x.tid,checked:true,'data-tid':x.tid});
+    const prog=h('textarea',{id:'ho-p-'+x.tid,class:'ho-p',rows:'2',maxlength:'1000',placeholder:'وين وصلت؟ مثال: رفعت الطلب في المنصة وبانتظار الموافقة'});
+    const nxt=h('input',{type:'text',id:'ho-n-'+x.tid,class:'ho-n',maxlength:'1000',placeholder:'الخطوة الجاية'});
+    const ct=h('input',{type:'text',id:'ho-c-'+x.tid,class:'ho-c',maxlength:'300',placeholder:'رقم المعاملة أو الجهة'});
+    const body=h('div',{class:'ho-fields'},prog,h('div',{class:'row'},nxt,ct));
+    const d=dueLabel(x.t);
+    const row=h('div',{class:'ho-task'},
+      h('label',{class:'check',for:cb.id},cb,h('span',{class:'ho-title'},x.t.title)),
+      h('div',{class:'meta'},h('span',null,SL[x.t.status]),d?h('span',{class:'due '+d.cls},d.text):null,
+        hasChallenge(x.t)?h('span',{class:'reply',style:'color:var(--flag)'},'فيها تحدي'):null),
+      body);
+    cb.addEventListener('change',()=>{body.hidden=!cb.checked;row.classList.toggle('off',!cb.checked);});
+    return row;
+  });
+  const sel=h('select',{id:'ho-to'},h('option',{value:''},'اختر الموظف'),mates.map(m=>h('option',{value:m.id},m.name)));
+  const form=h('form',{novalidate:true},
+    h('label',{class:'field',for:'ho-to'},'المستلم',sel),
+    h('div',{class:'row'},
+      h('label',{class:'field',for:'ho-start'},'من تاريخ',h('input',{type:'date',id:'ho-start',value:todayStr()})),
+      h('label',{class:'field',for:'ho-end'},'إلى تاريخ',h('input',{type:'date',id:'ho-end',value:ymd(d5)}))),
+    h('div',{class:'field'},'السبب',seg('ho-reason',[['إجازة','إجازة'],['انتداب','انتداب'],['أخرى','أخرى']],'إجازة')),
+    h('label',{class:'field',for:'ho-note'},h('span',null,'ملاحظة عامة للمستلم ',h('span',{class:'hint'},'(اختياري)')),
+      h('textarea',{id:'ho-note',rows:'2',maxlength:'2000',placeholder:'مثال: كلمات المرور عند فلان، أو أرقام تواصل مهمة'})),
+    h('h3',{class:'sub-h'},'المهام اللي بتسلّمها'),
+    rows.length?h('div',{class:'ho-list'},rows):h('p',{class:'notice'},'ما عندك مهام مفتوحة تسلّمها.'),
+    errEl,
+    h('div',{class:'form-actions'},
+      h('button',{class:'btn primary',type:'submit',disabled:!rows.length||!mates.length},'إرسال للمدير'),
+      h('button',{class:'btn',type:'button',onclick:closeModal},'إلغاء')));
+  form.addEventListener('submit',e=>{
+    e.preventDefault(); errEl.hidden=true;
+    const showErr=(msg,el)=>{errEl.textContent=msg;errEl.hidden=false;if(el) el.focus();};
+    const to=sel.value, startsOn=form.querySelector('#ho-start').value, endsOn=form.querySelector('#ho-end').value;
+    if(!to) return showErr('اختر المستلم.',sel);
+    if(!startsOn||!endsOn||endsOn<startsOn) return showErr('تأكد من التواريخ: تاريخ النهاية لازم يكون بعد البداية.',form.querySelector('#ho-end'));
+    const items=[];
+    for(const cb of form.querySelectorAll('input[data-tid]')){
+      if(!cb.checked) continue;
+      const tid=cb.dataset.tid, p=form.querySelector('#ho-p-'+tid);
+      if(!p.value.trim()) return showErr('اكتب "وين وصلت" لكل مهمة مختارة.',p);
+      items.push({taskId:tid,progress:p.value.trim(),nextStep:form.querySelector('#ho-n-'+tid).value.trim(),contact:form.querySelector('#ho-c-'+tid).value.trim()});
+    }
+    if(!items.length) return showErr('اختر مهمة وحدة على الأقل.');
+    const btn=form.querySelector('button[type=submit]'); btn.disabled=true;
+    run(api.submitHandover({to,startsOn,endsOn,reason:segVal(form,'ho-reason')||'إجازة',note:form.querySelector('#ho-note').value.trim(),items}),'انرسل ملف التسليم لمديرك')
+      .then(closeModal).catch(e=>{btn.disabled=false;showErr(errMsg(e));});
+  });
+  const sheet=h('div',{class:'sheet',role:'dialog','aria-modal':'true','aria-labelledby':'hn-h'},
+    h('div',{class:'sheet-head'},
+      h('div',null,h('h2',{id:'hn-h'},'تجهيز ملف تسليم'),h('p',{class:'src'},'يوصل لمديرك يعتمده، وبعدها يوصل للمستلم.')),
+      h('button',{class:'x',type:'button','aria-label':'إغلاق',onclick:closeModal},'×')),
+    form);
+  mountSheet(sheet,'#ho-to');
 }
 function deleteButton(m){
   let armed=false;
@@ -711,6 +988,10 @@ function startDemo(){
         c3:T({title:'تجديد اشتراك الغرفة التجارية',status:'done',doneAt:ago(4)})
       }
     },
+    handovers:[{id:'h1',from:'e2',to:'e1',startsOn:d(1),endsOn:d(7),reason:'إجازة',note:'أرقام التواصل مع مكتب العمل في ملاحظات كل مهمة.',status:'pending',managerNote:'',
+      decidedAt:null,acceptedAt:null,returnedAt:null,createdAt:ago(0.2),
+      items:[{taskId:'b2',title:'تحديث بيانات المنشأة في مقيم',progress:'رفعت طلب تحديث رقم الجوال في أبشر أعمال، وبانتظار رسالة التحقق.',nextStep:'إدخال رمز التحقق ثم تحديث البيانات في مقيم',contact:'طلب رقم 88213'},
+             {taskId:'b3',title:'متابعة اعتراض مخالفة لدى وزارة الموارد البشرية',progress:'قدّمت الاعتراض ومرفق صور العقود.',nextStep:'متابعة الرد خلال ٥ أيام عمل',contact:'اعتراض 4471 · مكتب العمل بالرياض'}]}],
     threads:{a2:{comments:[{author_id:'e1',role:'employee',created_at:ago(2),body:'رفعت الطلب وتوقف عند التفويض.'},{author_id:'mgr',role:'manager',created_at:ago(1),body:'كلمته الصباح، بيفعّلها اليوم إن شاء الله.'}],log:[]}}
   };
   for(const uid in S.demo.tasks) for(const tid in S.demo.tasks[uid]) Object.assign(S.demo.tasks[uid][tid],{id:tid,memberId:uid});

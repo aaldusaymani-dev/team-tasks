@@ -348,19 +348,10 @@ function render(){
   else body=gateView();
   $app.replaceChildren(h('div',{class:'wrap'},body));
 }
-// Brand logo: assets/brand/logo.png (light) and logo-white.png (dark). Missing files hide the slot.
-function logoEl(){
-  const wrap=h('span',{class:'logo'});
-  const miss=()=>wrap.classList.add('missing');
-  wrap.append(h('img',{class:'logo-l',src:'assets/brand/logo.png',alt:'',onerror:miss}),
-              h('img',{class:'logo-d',src:'assets/brand/logo-white.png',alt:'',onerror:miss}));
-  return wrap;
-}
 function header(title,sub,action){
   const acct=(!S.demo&&S.phase==='ready')?h('p',{class:'acct-bar'},(S.me&&S.me.name)+' · ',h('button',{class:'linkish',type:'button',onclick:signOut},'تسجيل الخروج')):null;
   return h('header',{class:'top'},
-    h('div',{class:'brand'},logoEl(),
-      h('div',{class:'titles'},h('h1',null,title),h('p',{class:'date'},[sub,todayLine()].filter(Boolean).join(' · ')),acct)),
+    h('div',{class:'titles'},h('h1',null,title),h('p',{class:'date'},[sub,todayLine()].filter(Boolean).join(' · ')),acct),
     action||null);
 }
 function gateView(){
@@ -371,7 +362,6 @@ function gateView(){
     h('p',null,'عبّ رابط مشروع Supabase والمفتاح العام (publishable) في ملف config.js. الخطوات كاملة في ملف README.'),
     h('div',{class:'actions'},demoBtn))];
   if(S.phase==='signedout') return [h('section',{class:'login'},
-    logoEl(),
     h('h1',null,APP_TITLE),
     h('p',{class:'muted'},'سجّل دخولك بحساب Google حق الشركة عشان تشوف مهامك.'),
     S.authErr?h('div',{class:'notice',style:'border-color:var(--late);color:var(--ink)'},
@@ -379,7 +369,6 @@ function gateView(){
     h('div',{class:'actions'},h('button',{class:'btn primary',type:'button',onclick:signIn},'الدخول بحساب Google'),demoBtn),
     h('p',{class:'date'},todayLine()))];
   if(S.phase==='notmember') return [h('section',{class:'login'},
-    logoEl(),
     h('h1',null,APP_TITLE),
     h('p',null,'حسابك ',h('bdi',{class:'mail'},S.authEmail),' مو مضاف للفريق.'),
     h('p',{class:'muted'},'اطلب من مديرك يضيف إيميلك من "أسماء الفريق"، وبعدها حدّث الصفحة.'),
